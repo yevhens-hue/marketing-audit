@@ -5,9 +5,9 @@ import os
 from datetime import datetime
 
 # --- CONFIGURATION ---
-# Replace with your actual Telegram Bot Token and Chat ID
-TELEGRAM_BOT_TOKEN = '8536522580:AAGN2g8NyA5DC2qn65hPMz6rayEj2ISH0gY'
-TELEGRAM_CHAT_ID = '264172207'
+# It's better to use Environment Variables for security
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8536522580:AAGN2g8NyA5DC2qn65hPMz6rayEj2ISH0gY')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '-5088344832') 
 # Google Sheet URL (Publicly accessible or setup with service account)
 SHEET_ID = '1r-eLYMgcYW1O420YZzIhwr7HItAdDtbU_YdKvw6kCI4'
 GID = '1782986040' 
