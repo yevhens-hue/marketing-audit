@@ -58,15 +58,30 @@ def analyze_and_report(df):
     df['CPA'] = df['Costs'] / df['RFD']
     df['ROAS'] = df['In'] / df['Costs']
     
-    # Handle division by zero
-    df.fillna(0, inplace=True)
-    df.replace([np.inf, -np.inf], 0, inplace=True)
+    # --- FILTER BY DATE ---
+    # Convert 'Date' column to datetime objects
+    df['Date_DT'] = pd.to_datetime(df['Date'], format='%d/%m/%Y', errors='coerce')
+    
+    # Get the latest date available in the sheet
+    latest_date = df['Date_DT'].max()
+    latest_date_str = latest_date.strftime('%d/%m/%Y') if not pd.isnull(latest_date) else "Unknown"
+    
+    # Filter dataframe to only include the latest day's data
+    df_daily = df[df['Date_DT'] == latest_date].copy()
+    
+    if df_daily.empty:
+        send_telegram_message(f"⚠️ No data found for the latest date.")
+        return df
 
-    # --- DECISION LOGIC ---
+    # Handle division by zero
+    df_daily.fillna(0, inplace=True)
+    df_daily.replace([np.inf, -np.inf], 0, inplace=True)
+
+    # --- DECISION LOGIC (on daily data) ---
     recommendations = []
     alerts = []
     
-    for index, row in df.iterrows():
+    for index, row in df_daily.iterrows():
         roas = row['ROAS']
         cost = row['Costs']
         buyer = row.get('Buyer', 'Unknown')
@@ -88,14 +103,15 @@ def analyze_and_report(df):
             
         recommendations.append(rec)
     
-    df['AI_Recommendation'] = recommendations
+    df_daily['AI_Recommendation'] = recommendations
     
     # --- GENERATE REPORT TEXT ---
     
-    top_winners = df[df['AI_Recommendation'].str.contains('ROCKET|SCALE')].sort_values(by='ROAS', ascending=False).head(5)
-    top_losers = df[df['AI_Recommendation'].str.contains('STOP')].sort_values(by='Costs', ascending=False).head(5)
+    top_winners = df_daily[df_daily['AI_Recommendation'].str.contains('ROCKET|SCALE')].sort_values(by='ROAS', ascending=False).head(5)
+    top_losers = df_daily[df_daily['AI_Recommendation'].str.contains('STOP')].sort_values(by='Costs', ascending=False).head(5)
     
-    report = f"📊 **DAILY MARKETING AUDIT: {datetime.now().strftime('%Y-%m-%d')}**\n\n"
+    report = f"📊 **DAILY MARKETING AUDIT: {latest_date_str}**\n"
+    report += f"*(Analysis based on {len(df_daily)} entries)*\n\n"
     
     report += "🚀 **TOP OPPORTUNITIES:**\n"
     for _, row in top_winners.iterrows():
