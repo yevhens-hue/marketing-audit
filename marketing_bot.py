@@ -32,6 +32,11 @@ def load_data():
     try:
         # Added skiprows=1 to skip the description row
         df = pd.read_csv(CSV_URL, skiprows=1)
+        
+        # Rename "RFD*" to "RFD" to match our logic
+        if 'RFD*' in df.columns:
+            df.rename(columns={'RFD*': 'RFD'}, inplace=True)
+            
         return df
     except Exception as e:
         send_telegram_message(f"🚨 CRITICAL ERROR: Failed to load data from Google Sheet.\nError: {str(e)}")
