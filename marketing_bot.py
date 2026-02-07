@@ -6,9 +6,8 @@ from datetime import datetime
 
 # --- CONFIGURATION ---
 # Replace with your actual Telegram Bot Token and Chat ID
-TELEGRAM_BOT_TOKEN = 'YOUR_BOT_TOKEN'
-TELEGRAM_CHAT_ID = 'YOUR_CHAT_ID' 
-
+TELEGRAM_BOT_TOKEN = '8536522580:AAGN2g8NyA5DC2qn65hPMz6rayEj2ISH0gY'
+TELEGRAM_CHAT_ID = '264172207
 # Google Sheet URL (Publicly accessible or setup with service account)
 SHEET_ID = '1r-eLYMgcYW1O420YZzIhwr7HItAdDtbU_YdKvw6kCI4'
 GID = '1782986040' 
@@ -31,7 +30,8 @@ def send_telegram_message(message):
 def load_data():
     """Loads data directly from the Google Sheet."""
     try:
-        df = pd.read_csv(CSV_URL)
+        # Added skiprows=1 to skip the description row
+        df = pd.read_csv(CSV_URL, skiprows=1)
         return df
     except Exception as e:
         send_telegram_message(f"🚨 CRITICAL ERROR: Failed to load data from Google Sheet.\nError: {str(e)}")
@@ -40,11 +40,13 @@ def load_data():
 def analyze_and_report(df):
     """Analyzes the data, adds recommendations, and generates a report."""
     
-    # Clean and convert numeric columns if they are strings (e.g. "$1,234")
+    # Clean and convert numeric columns
+    # Handle currency like "$18 094" (remove spaces, $, replace comma with dot if needed)
     cols_to_clean = ['Costs', 'In', 'Out', 'RFD', 'Regs']
     for col in cols_to_clean:
-        if col in df.columns and df[col].dtype == 'object':
-            df[col] = df[col].astype(str).str.replace(r'[$, ]', '', regex=True)
+        if col in df.columns:
+            # Convert to string, replace (non-breaking) spaces and $, replace comma with dot
+            df[col] = df[col].astype(str).str.replace(r'[$\s\xa0]', '', regex=True).str.replace(',', '.')
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
     # Calculate Metrics
