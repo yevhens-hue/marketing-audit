@@ -105,13 +105,13 @@ def analyze_and_report(df):
     for _, row in top_losers.iterrows():
         report += f"- Buyer {row.get('Buyer')}/F{row.get('Funnel')}: ROAS {row['ROAS']:.2f}, Cost ${row['Costs']:.0f} ({row['AI_Recommendation']})\n"
         
-    # Send Main Report
-    send_telegram_message(report)
-    
-    # Send Instant Alerts (if any critical anomalies found)
+    # Append Alerts to the same report message if any
     if alerts:
-        for alert in alerts:
-            send_telegram_message(alert)
+        report += "\n⚠️ **CRITICAL ALERTS:**\n"
+        report += "\n".join(alerts)
+        
+    # Send everything as ONE message
+    send_telegram_message(report)
             
     return df
 
