@@ -2,14 +2,24 @@ services:
   - type: cron
     name: marketing-daily-audit
     env: python
-    plan: starter # Cron Jobs on Render require a paid plan
-    schedule: "0 9 * * *" # 10:00 AM Warsaw (09:00 UTC)
+    plan: starter
+    schedule: "0 9 * * *" # 10:00 AM Warsaw
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python marketing_bot.py"
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        sync: false # Set this in the Render Dashboard
+        sync: false
       - key: TELEGRAM_CHAT_ID
-        sync: false # Set this in the Render Dashboard
-      - key: PYTHON_VERSION
-        value: 3.9.13
+        sync: false
+
+  - type: worker
+    name: marketing-interactive-bot
+    env: python
+    plan: starter
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python marketing_bot.py --bot"
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

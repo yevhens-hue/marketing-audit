@@ -2,54 +2,44 @@ import pandas as pd
 import numpy as np
 import requests
 import os
+import sys
+import telebot
 from datetime import datetime
 
 # --- CONFIGURATION ---
-# It's better to use Environment Variables for security
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8536522580:AAGN2g8NyA5DC2qn65hPMz6rayEj2ISH0gY')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '-5088344832') 
-# Google Sheet URL (Publicly accessible or setup with service account)
 SHEET_ID = '1r-eLYMgcYW1O420YZzIhwr7HItAdDtbU_YdKvw6kCI4'
 GID = '1782986040' 
 CSV_URL = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}'
 
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+
 def send_telegram_message(message):
     """Sends a message to the specified Telegram chat."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': TELEGRAM_CHAT_ID,
-        'text': message,
-        'parse_mode': 'Markdown'
-    }
     try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
+        bot.send_message(TELEGRAM_CHAT_ID, message, parse_mode='Markdown')
     except Exception as e:
         print(f"Failed to send Telegram message: {e}")
 
 def load_data():
     """Loads data directly from the Google Sheet."""
     try:
-        # Added skiprows=1 to skip the description row
         df = pd.read_csv(CSV_URL, skiprows=1)
-        
-        # Forward fill Date and Buyer columns to handle merged cells in Google Sheets
         if 'Date' in df.columns:
             df['Date'] = df['Date'].ffill()
         if 'Buyer' in df.columns:
             df['Buyer'] = df['Buyer'].ffill()
-            
-        # Rename "RFD*" to "RFD" to match our logic
         if 'RFD*' in df.columns:
             df.rename(columns={'RFD*': 'RFD'}, inplace=True)
-            
         return df
     except Exception as e:
         send_telegram_message(f"🚨 CRITICAL ERROR: Failed to load data from Google Sheet.\nError: {str(e)}")
         return None
 
-def analyze_and_report(df):
+def analyze_and_report(df, target_date_str=None, chat_id=None):
     """Analyzes the data, adds recommendations, and generates a report."""
+    target_chat_id = chat_id if chat_id else TELEGRAM_CHAT_ID
     
     # Clean and convert numeric columns
     cols_to_clean = ['Costs', 'In', 'Out', 'RFD', 'Regs']
@@ -58,127 +48,133 @@ def analyze_and_report(df):
             df[col] = df[col].astype(str).str.replace(r'[$\s\xa0]', '', regex=True).str.replace(',', '.')
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # Calculate Metrics for the entire dataset
+    # Calculate Metrics
     df['CPA'] = df['Costs'] / df['RFD']
     df['ROAS'] = df['In'] / df['Costs']
     df.fillna(0, inplace=True)
     df.replace([np.inf, -np.inf], 0, inplace=True)
     
     # --- FILTER BY DATE ---
-    df['Date_DT'] = pd.to_datetime(df['Date'], format='%d/%m/%Y', errors='coerce')
-    
-    # Get all unique dates sorted
+    df['Date_DT'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
     unique_dates = sorted(df['Date_DT'].dropna().unique())
+    
     if not unique_dates:
-        send_telegram_message("⚠️ No valid dates found in the sheet.")
+        bot.send_message(target_chat_id, "⚠️ No valid dates found in the sheet.")
         return df
 
-    latest_date = unique_dates[-1]
-    previous_date = unique_dates[-2] if len(unique_dates) > 1 else None
+    if target_date_str:
+        try:
+            latest_date = pd.to_datetime(target_date_str, dayfirst=True)
+            if latest_date not in unique_dates:
+                 available_dates = ", ".join([d.strftime('%d.%m.%Y') for d in unique_dates])
+                 bot.send_message(target_chat_id, f"⚠️ Date {target_date_str} not found. Available: {available_dates}")
+                 return df
+        except:
+            bot.send_message(target_chat_id, f"⚠️ Invalid date format: {target_date_str}. Use DD.MM.YYYY")
+            return df
+    else:
+        today = pd.Timestamp.now().normalize()
+        past_dates = [d for d in unique_dates if d <= today]
+        latest_date = past_dates[-1] if past_dates else unique_dates[-1]
+
+    idx = unique_dates.index(latest_date)
+    previous_date = unique_dates[idx - 1] if idx > 0 else None
+    latest_date_str = latest_date.strftime('%d.%m.%Y')
     
-    latest_date_str = latest_date.strftime('%d/%m/%Y')
-    
-    # Filter dataframes
     df_latest = df[df['Date_DT'] == latest_date].copy()
-    # Initialize df_prev with columns even if empty
     df_prev = df[df['Date_DT'] == previous_date].copy() if previous_date else df.iloc[:0].copy()
     
     if df_latest.empty:
-        send_telegram_message(f"⚠️ No data found for the latest date {latest_date_str}.")
+        bot.send_message(target_chat_id, f"⚠️ No data found for the date {latest_date_str}.")
         return df
 
     def get_delta_str(current, prev):
-        if prev == 0 or pd.isnull(prev):
-            return ""
+        if prev == 0 or pd.isnull(prev): return ""
         delta = ((current - prev) / prev) * 100
         icon = "📈" if delta > 0 else "📉"
         return f" ({icon} {delta:+.1f}%)"
 
-    # --- DECISION LOGIC (on latest data) ---
+    # --- DECISION LOGIC ---
     recommendations = []
     alerts = []
-    
     for index, row in df_latest.iterrows():
-        roas = row['ROAS']
-        cost = row['Costs']
-        buyer = row.get('Buyer', 'Unknown')
-        funnel = row.get('Funnel', 'Unknown')
-        
+        roas, cost = row['ROAS'], row['Costs']
+        buyer, funnel = row.get('Buyer', 'Unknown'), row.get('Funnel', 'Unknown')
         rec = "🛡️ MONITOR"
         if roas > 4.0 and cost > 1000:
             rec = "🚀 ROCKET SCALE (ROAS > 4)"
-            alerts.append(f"🦄 **UNICORN ALERT:** Buyer {buyer} (Funnel {funnel}) has ROAS {roas:.2f}! Scale immediately!")
+            alerts.append(f"🦄 **UNICORN ALERT:** Buyer {buyer} (Funnel {funnel}) has ROAS {roas:.2f}! Scale!")
         elif roas > 2.0 and cost > 2000:
             rec = "🔥 SCALE AGGRESSIVE"
         elif roas < 0.6 and cost > 2000:
             rec = "❌ STOP IMMEDIATE (Burning Cash)"
-            alerts.append(f"🚨 **BUDGET BLEED:** Buyer {buyer} (Funnel {funnel}) is burning cash (ROAS {roas:.2f}). Stop now.")
+            alerts.append(f"🚨 **BUDGET BLEED:** Buyer {buyer} (Funnel {funnel}) ROAS {roas:.2f}. Stop!")
         elif roas > 0.9:
             rec = "📈 MAINTAIN / SCALE"
-            
         recommendations.append(rec)
     
     df_latest['AI_Recommendation'] = recommendations
     
-    # --- GENERATE REPORT TEXT ---
-    report = f"📊 **DAILY MARKETING AUDIT: {latest_date_str}**\n"
-    report += f"*(Analysis based on {len(df_latest)} entries)*\n\n"
+    # --- REPORT TEXT ---
+    report = f"📊 **MARKETING AUDIT: {latest_date_str}**\n\n"
     
-    # Top Winners with comparison
     top_winners = df_latest[df_latest['AI_Recommendation'].str.contains('ROCKET|SCALE')].sort_values(by='ROAS', ascending=False).head(5)
     if not top_winners.empty:
         report += "🚀 **TOP OPPORTUNITIES:**\n"
         for _, row in top_winners.iterrows():
-            buyer, funnel = row.get('Buyer'), row.get('Funnel')
-            # Try to find previous performance for this specific buyer/funnel
-            prev_row = df_prev[(df_prev['Buyer'] == buyer) & (df_prev['Funnel'] == funnel)]
-            roas_delta = get_delta_str(row['ROAS'], prev_row['ROAS'].values[0]) if not prev_row.empty else ""
-            
-            report += f"- Buyer {buyer}/F{funnel}: ROAS {row['ROAS']:.2f}{roas_delta}, CPA ${row['CPA']:.0f} ({row['AI_Recommendation']})\n"
+            prev_row = df_prev[(df_prev['Buyer'] == row['Buyer']) & (df_prev['Funnel'] == row['Funnel'])]
+            delta = get_delta_str(row['ROAS'], prev_row['ROAS'].values[0]) if not prev_row.empty else ""
+            report += f"- B{row['Buyer']}/F{row['Funnel']}: ROAS {row['ROAS']:.2f}{delta}, CPA ${row['CPA']:.0f}\n"
         
-    # Top Losers with comparison
     top_losers = df_latest[df_latest['AI_Recommendation'].str.contains('STOP')].sort_values(by='Costs', ascending=False).head(5)
     if not top_losers.empty:
         report += "\n❌ **CRITICAL CUTS:**\n"
         for _, row in top_losers.iterrows():
-            buyer, funnel = row.get('Buyer'), row.get('Funnel')
-            prev_row = df_prev[(df_prev['Buyer'] == buyer) & (df_prev['Funnel'] == funnel)]
-            roas_delta = get_delta_str(row['ROAS'], prev_row['ROAS'].values[0]) if not prev_row.empty else ""
-            
-            report += f"- Buyer {buyer}/F{funnel}: ROAS {row['ROAS']:.2f}{roas_delta}, Cost ${row['Costs']:.0f} ({row['AI_Recommendation']})\n"
+            prev_row = df_prev[(df_prev['Buyer'] == row['Buyer']) & (df_prev['Funnel'] == row['Funnel'])]
+            delta = get_delta_str(row['ROAS'], prev_row['ROAS'].values[0]) if not prev_row.empty else ""
+            report += f"- B{row['Buyer']}/F{row['Funnel']}: ROAS {row['ROAS']:.2f}{delta}, Cost ${row['Costs']:.0f}\n"
         
-    # DoD Summary
     if previous_date:
-        total_in_now = df_latest['In'].sum()
-        total_in_prev = df_prev['In'].sum()
-        in_delta = get_delta_str(total_in_now, total_in_prev)
-        
-        avg_roas_now = df_latest['In'].sum() / df_latest['Costs'].sum() if df_latest['Costs'].sum() > 0 else 0
-        avg_roas_prev = df_prev['In'].sum() / df_prev['Costs'].sum() if df_prev['Costs'].sum() > 0 else 0
-        roas_delta_total = get_delta_str(avg_roas_now, avg_roas_prev)
-        
-        report += f"\n📈 **DoD Summary:**\n"
-        report += f"- Total Revenue: ${total_in_now:,.0f}{in_delta}\n"
-        report += f"- Portfolio ROAS: {avg_roas_now:.2f}{roas_delta_total}\n"
+        t_in_now, t_in_prev = df_latest['In'].sum(), df_prev['In'].sum()
+        roas_now = df_latest['In'].sum() / df_latest['Costs'].sum() if df_latest['Costs'].sum() > 0 else 0
+        roas_prev = df_prev['In'].sum() / df_prev['Costs'].sum() if df_prev['Costs'].sum() > 0 else 0
+        report += f"\n📈 **DoD Summary:**\n- Revenue: ${t_in_now:,.0f}{get_delta_str(t_in_now, t_in_prev)}\n- Portf. ROAS: {roas_now:.2f}{get_delta_str(roas_now, roas_prev)}\n"
 
-    # Append Alerts
     if alerts:
-        report += "\n⚠️ **CRITICAL ALERTS:**\n"
-        report += "\n".join(alerts)
+        report += "\n⚠️ **ALERTS:**\n" + "\n".join(alerts)
         
-    send_telegram_message(report)
+    bot.send_message(target_chat_id, report, parse_mode='Markdown')
     return df_latest
 
+# --- TELEGRAM BOT HANDLERS ---
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    help_text = "👋 **Marketing Audit Bot**\n\nCommands:\n/report - Latest audit\n/report DD.MM.YYYY - Audit for date\n/status - System status"
+    bot.reply_to(message, help_text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['report'])
+def handle_report_command(message):
+    args = message.text.split()
+    target_date = args[1] if len(args) > 1 else None
+    bot.reply_to(message, "⏳ Analyzing data... please wait.")
+    df = load_data()
+    if df is not None:
+        analyze_and_report(df, target_date_str=target_date, chat_id=message.chat.id)
+
+@bot.message_handler(commands=['status'])
+def handle_status(message):
+    bot.reply_to(message, "✅ System is Online and connected to Google Sheets.")
+
+# --- MAIN EXECUTION ---
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
-    print("Loading data...")
-    df = load_data()
-    
-    if df is not None:
-        print("Analyzing...")
-        result_df = analyze_and_report(df)
-        
-        # Save locally with recommendations
-        output_filename = f"marketing_audit_{datetime.now().strftime('%Y%m%d')}.csv"
-        result_df.to_csv(output_filename, index=False)
-        print(f"Done! Report saved to {output_filename} and sent to Telegram.")
+    if len(sys.argv) > 1 and sys.argv[1] == "--bot":
+        print("Starting Telegram Bot Polling Mode...")
+        bot.infinity_polling()
+    else:
+        target_date = sys.argv[1] if len(sys.argv) > 1 else None
+        print(f"Running One-off Audit (Target: {target_date if target_date else 'LATEST'})...")
+        df = load_data()
+        if df is not None:
+            analyze_and_report(df, target_date_str=target_date)
+            print("Done! Report sent to Telegram.")
