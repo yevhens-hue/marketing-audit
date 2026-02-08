@@ -122,17 +122,19 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
     if not top_winners.empty:
         report += "🚀 **TOP OPPORTUNITIES:**\n"
         for _, row in top_winners.iterrows():
-            prev_row = df_prev[(df_prev['Buyer'] == row['Buyer']) & (df_prev['Funnel'] == row['Funnel'])]
-            delta = get_delta_str(row['ROAS'], prev_row['ROAS'].values[0]) if not prev_row.empty else ""
-            report += f"- B{row['Buyer']}/F{row['Funnel']}: ROAS {row['ROAS']:.2f}{delta}, CPA ${row['CPA']:.0f}\n"
+            buyer, funnel = row.get('Buyer'), row.get('Funnel')
+            prev_row = df_prev[(df_prev['Buyer'] == buyer) & (df_prev['Funnel'] == funnel)]
+            delta = get_delta_str(row['ROAS'], prev_row['ROAS'].iloc[0]) if not prev_row.empty else ""
+            report += f"- B{buyer}/F{funnel}: ROAS {row['ROAS']:.2f}{delta}, CPA ${row['CPA']:.0f}\n"
         
     top_losers = df_latest[df_latest['AI_Recommendation'].str.contains('STOP')].sort_values(by='Costs', ascending=False).head(5)
     if not top_losers.empty:
         report += "\n❌ **CRITICAL CUTS:**\n"
         for _, row in top_losers.iterrows():
-            prev_row = df_prev[(df_prev['Buyer'] == row['Buyer']) & (df_prev['Funnel'] == row['Funnel'])]
-            delta = get_delta_str(row['ROAS'], prev_row['ROAS'].values[0]) if not prev_row.empty else ""
-            report += f"- B{row['Buyer']}/F{row['Funnel']}: ROAS {row['ROAS']:.2f}{delta}, Cost ${row['Costs']:.0f}\n"
+            buyer, funnel = row.get('Buyer'), row.get('Funnel')
+            prev_row = df_prev[(df_prev['Buyer'] == buyer) & (df_prev['Funnel'] == funnel)]
+            delta = get_delta_str(row['ROAS'], prev_row['ROAS'].iloc[0]) if not prev_row.empty else ""
+            report += f"- B{buyer}/F{funnel}: ROAS {row['ROAS']:.2f}{delta}, Cost ${row['Costs']:.0f}\n"
         
     if previous_date:
         t_in_now, t_in_prev = df_latest['In'].sum(), df_prev['In'].sum()
@@ -154,12 +156,20 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['report'])
 def handle_report_command(message):
-    args = message.text.split()
-    target_date = args[1] if len(args) > 1 else None
-    bot.reply_to(message, "⏳ Analyzing data... please wait.")
-    df = load_data()
-    if df is not None:
+    try:
+        args = message.text.split()
+        target_date = args[1] if len(args) > 1 else None
+        bot.reply_to(message, "⏳ Analyzing data... please wait.")
+        
+        df = load_data()
+        if df is None:
+            bot.send_message(message.chat.id, "❌ Error: Could not load data from Google Sheets.")
+            return
+            
         analyze_and_report(df, target_date_str=target_date, chat_id=message.chat.id)
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Bot Crash Error:\n{str(e)}")
+        print(f"Error handling /report: {e}")
 
 @bot.message_handler(commands=['status'])
 def handle_status(message):
