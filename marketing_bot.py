@@ -52,50 +52,59 @@ def analyze_and_report(df):
     """Analyzes the data, adds recommendations, and generates a report."""
     
     # Clean and convert numeric columns
-    # Handle currency like "$18 094" (remove spaces, $, replace comma with dot if needed)
     cols_to_clean = ['Costs', 'In', 'Out', 'RFD', 'Regs']
     for col in cols_to_clean:
         if col in df.columns:
-            # Convert to string, replace (non-breaking) spaces and $, replace comma with dot
             df[col] = df[col].astype(str).str.replace(r'[$\s\xa0]', '', regex=True).str.replace(',', '.')
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # Calculate Metrics
+    # Calculate Metrics for the entire dataset
     df['CPA'] = df['Costs'] / df['RFD']
     df['ROAS'] = df['In'] / df['Costs']
+    df.fillna(0, inplace=True)
+    df.replace([np.inf, -np.inf], 0, inplace=True)
     
     # --- FILTER BY DATE ---
-    # Convert 'Date' column to datetime objects
     df['Date_DT'] = pd.to_datetime(df['Date'], format='%d/%m/%Y', errors='coerce')
     
-    # Get the latest date available in the sheet
-    latest_date = df['Date_DT'].max()
-    latest_date_str = latest_date.strftime('%d/%m/%Y') if not pd.isnull(latest_date) else "Unknown"
-    
-    # Filter dataframe to only include the latest day's data
-    df_daily = df[df['Date_DT'] == latest_date].copy()
-    
-    if df_daily.empty:
-        send_telegram_message(f"⚠️ No data found for the latest date.")
+    # Get all unique dates sorted
+    unique_dates = sorted(df['Date_DT'].dropna().unique())
+    if not unique_dates:
+        send_telegram_message("⚠️ No valid dates found in the sheet.")
         return df
 
-    # Handle division by zero
-    df_daily.fillna(0, inplace=True)
-    df_daily.replace([np.inf, -np.inf], 0, inplace=True)
+    latest_date = unique_dates[-1]
+    previous_date = unique_dates[-2] if len(unique_dates) > 1 else None
+    
+    latest_date_str = latest_date.strftime('%d/%m/%Y')
+    
+    # Filter dataframes
+    df_latest = df[df['Date_DT'] == latest_date].copy()
+    # Initialize df_prev with columns even if empty
+    df_prev = df[df['Date_DT'] == previous_date].copy() if previous_date else df.iloc[:0].copy()
+    
+    if df_latest.empty:
+        send_telegram_message(f"⚠️ No data found for the latest date {latest_date_str}.")
+        return df
 
-    # --- DECISION LOGIC (on daily data) ---
+    def get_delta_str(current, prev):
+        if prev == 0 or pd.isnull(prev):
+            return ""
+        delta = ((current - prev) / prev) * 100
+        icon = "📈" if delta > 0 else "📉"
+        return f" ({icon} {delta:+.1f}%)"
+
+    # --- DECISION LOGIC (on latest data) ---
     recommendations = []
     alerts = []
     
-    for index, row in df_daily.iterrows():
+    for index, row in df_latest.iterrows():
         roas = row['ROAS']
         cost = row['Costs']
         buyer = row.get('Buyer', 'Unknown')
         funnel = row.get('Funnel', 'Unknown')
         
         rec = "🛡️ MONITOR"
-        
-        # Logic Tree
         if roas > 4.0 and cost > 1000:
             rec = "🚀 ROCKET SCALE (ROAS > 4)"
             alerts.append(f"🦄 **UNICORN ALERT:** Buyer {buyer} (Funnel {funnel}) has ROAS {roas:.2f}! Scale immediately!")
@@ -109,33 +118,56 @@ def analyze_and_report(df):
             
         recommendations.append(rec)
     
-    df_daily['AI_Recommendation'] = recommendations
+    df_latest['AI_Recommendation'] = recommendations
     
     # --- GENERATE REPORT TEXT ---
-    
-    top_winners = df_daily[df_daily['AI_Recommendation'].str.contains('ROCKET|SCALE')].sort_values(by='ROAS', ascending=False).head(5)
-    top_losers = df_daily[df_daily['AI_Recommendation'].str.contains('STOP')].sort_values(by='Costs', ascending=False).head(5)
-    
     report = f"📊 **DAILY MARKETING AUDIT: {latest_date_str}**\n"
-    report += f"*(Analysis based on {len(df_daily)} entries)*\n\n"
+    report += f"*(Analysis based on {len(df_latest)} entries)*\n\n"
     
-    report += "🚀 **TOP OPPORTUNITIES:**\n"
-    for _, row in top_winners.iterrows():
-        report += f"- Buyer {row.get('Buyer')}/F{row.get('Funnel')}: ROAS {row['ROAS']:.2f}, CPA ${row['CPA']:.0f} ({row['AI_Recommendation']})\n"
+    # Top Winners with comparison
+    top_winners = df_latest[df_latest['AI_Recommendation'].str.contains('ROCKET|SCALE')].sort_values(by='ROAS', ascending=False).head(5)
+    if not top_winners.empty:
+        report += "🚀 **TOP OPPORTUNITIES:**\n"
+        for _, row in top_winners.iterrows():
+            buyer, funnel = row.get('Buyer'), row.get('Funnel')
+            # Try to find previous performance for this specific buyer/funnel
+            prev_row = df_prev[(df_prev['Buyer'] == buyer) & (df_prev['Funnel'] == funnel)]
+            roas_delta = get_delta_str(row['ROAS'], prev_row['ROAS'].values[0]) if not prev_row.empty else ""
+            
+            report += f"- Buyer {buyer}/F{funnel}: ROAS {row['ROAS']:.2f}{roas_delta}, CPA ${row['CPA']:.0f} ({row['AI_Recommendation']})\n"
         
-    report += "\n❌ **CRITICAL CUTS:**\n"
-    for _, row in top_losers.iterrows():
-        report += f"- Buyer {row.get('Buyer')}/F{row.get('Funnel')}: ROAS {row['ROAS']:.2f}, Cost ${row['Costs']:.0f} ({row['AI_Recommendation']})\n"
+    # Top Losers with comparison
+    top_losers = df_latest[df_latest['AI_Recommendation'].str.contains('STOP')].sort_values(by='Costs', ascending=False).head(5)
+    if not top_losers.empty:
+        report += "\n❌ **CRITICAL CUTS:**\n"
+        for _, row in top_losers.iterrows():
+            buyer, funnel = row.get('Buyer'), row.get('Funnel')
+            prev_row = df_prev[(df_prev['Buyer'] == buyer) & (df_prev['Funnel'] == funnel)]
+            roas_delta = get_delta_str(row['ROAS'], prev_row['ROAS'].values[0]) if not prev_row.empty else ""
+            
+            report += f"- Buyer {buyer}/F{funnel}: ROAS {row['ROAS']:.2f}{roas_delta}, Cost ${row['Costs']:.0f} ({row['AI_Recommendation']})\n"
         
-    # Append Alerts to the same report message if any
+    # DoD Summary
+    if previous_date:
+        total_in_now = df_latest['In'].sum()
+        total_in_prev = df_prev['In'].sum()
+        in_delta = get_delta_str(total_in_now, total_in_prev)
+        
+        avg_roas_now = df_latest['In'].sum() / df_latest['Costs'].sum() if df_latest['Costs'].sum() > 0 else 0
+        avg_roas_prev = df_prev['In'].sum() / df_prev['Costs'].sum() if df_prev['Costs'].sum() > 0 else 0
+        roas_delta_total = get_delta_str(avg_roas_now, avg_roas_prev)
+        
+        report += f"\n📈 **DoD Summary:**\n"
+        report += f"- Total Revenue: ${total_in_now:,.0f}{in_delta}\n"
+        report += f"- Portfolio ROAS: {avg_roas_now:.2f}{roas_delta_total}\n"
+
+    # Append Alerts
     if alerts:
         report += "\n⚠️ **CRITICAL ALERTS:**\n"
         report += "\n".join(alerts)
         
-    # Send everything as ONE message
     send_telegram_message(report)
-            
-    return df
+    return df_latest
 
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
