@@ -13,8 +13,10 @@ from datetime import datetime, timedelta
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8536522580:AAGN2g8NyA5DC2qn65hPMz6rayEj2ISH0gY')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '-5088344832') 
 SHEET_ID = '1r-eLYMgcYW1O420YZzIhwr7HItAdDtbU_YdKvw6kCI4'
-GID = '1782986040' 
-CSV_URL = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}'
+GID_TAB1 = '1782986040' 
+GID_TAB2 = '407212296'
+CSV_URL_TAB1 = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID_TAB1}'
+CSV_URL_TAB2 = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID_TAB2}'
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
@@ -25,19 +27,20 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"Failed to send Telegram message: {e}")
 
-def load_data(chat_id=None):
-    """Loads data directly from the Google Sheet."""
+def load_data(chat_id=None, tab=1):
+    """Loads data from the specified tab of the Google Sheet."""
+    url = CSV_URL_TAB1 if tab == 1 else CSV_URL_TAB2
     try:
-        df = pd.read_csv(CSV_URL, skiprows=1)
+        df = pd.read_csv(url, skiprows=1 if tab == 1 else 0)
         if 'Date' in df.columns:
             df['Date'] = df['Date'].ffill()
         if 'Buyer' in df.columns:
             df['Buyer'] = df['Buyer'].ffill()
-        if 'RFD*' in df.columns:
+        if tab == 1 and 'RFD*' in df.columns:
             df.rename(columns={'RFD*': 'RFD'}, inplace=True)
         return df
     except Exception as e:
-        error_msg = f"🚨 DATA LOAD ERROR: {str(e)}"
+        error_msg = f"🚨 DATA LOAD ERROR (TAB {tab}): {str(e)}"
         if chat_id:
             bot.send_message(chat_id, error_msg)
         print(error_msg)
@@ -103,7 +106,65 @@ def generate_charts(df, latest_date):
         print(f"Chart generation failed: {e}")
         return None
 
-def analyze_and_report(df, target_date_str=None, chat_id=None):
+def generate_tab2_report(df_tab2, latest_date):
+    """Generates charts and summary for Tab 2 (Aggregated Data)."""
+    try:
+        filename = "tab2_report.png"
+        
+        # Clean numeric data for Tab 2
+        for col in ['Costs', 'In', 'Out', 'RFD', 'Regs']:
+            if col in df_tab2.columns:
+                df_tab2[col] = df_tab2[col].astype(str).str.replace(r'[$\s\xa0]', '', regex=True).str.replace(',', '.')
+                df_tab2[col] = pd.to_numeric(df_tab2[col], errors='coerce').fillna(0)
+        
+        df_tab2['Date_DT'] = pd.to_datetime(df_tab2['Date'].astype(str), dayfirst=True, errors='coerce')
+        
+        # Filter for latest date
+        df_latest = df_tab2[df_tab2['Date_DT'] == latest_date]
+        if df_latest.empty:
+            return None, "No specific data for this date in Tab 2"
+
+        # Pivot data for a table-like summary
+        summary_group = 'Buyer' if 'Buyer' in df_tab2.columns else df_tab2.columns[1]
+        summary = df_latest.groupby(summary_group).agg({
+            'Costs': 'sum',
+            'In': 'sum',
+            'RFD': 'sum'
+        })
+        summary['ROAS'] = np.where(summary['Costs'] > 0, summary['In'] / summary['Costs'], 0)
+        summary.fillna(0, inplace=True)
+
+        # Plotting
+        fig, ax = plt.subplots(figsize=(10, 5))
+        fig.patch.set_facecolor('#ffffff')
+        
+        x = np.arange(len(summary))
+        width = 0.35
+        ax.bar(x - width/2, summary['Costs'], width, label='Costs', color='#e74c3c', alpha=0.8)
+        ax.bar(x + width/2, summary['In'], width, label='In (Revenue)', color='#2ecc71', alpha=0.8)
+        
+        ax.set_title(f'Tab 2 Performance: {latest_date.strftime("%d.%m.%Y")}', fontsize=14, fontweight='bold', pad=15)
+        ax.set_xticks(x)
+        ax.set_xticklabels(summary.index)
+        ax.set_ylabel('Amount ($)')
+        ax.legend()
+        ax.grid(True, axis='y', linestyle='--', alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(filename, dpi=120)
+        plt.close()
+
+        # Text Summary
+        text_report = "📖 **TAB 2 (Aggregated) DETAILS:**\n"
+        for idx, row in summary.iterrows():
+            text_report += f"- {idx}: Cost ${row['Costs']:,.0f} | In ${row['In']:,.0f} | ROAS {row['ROAS']:.2f}\n"
+            
+        return filename, text_report
+    except Exception as e:
+        print(f"Tab 2 report failed: {e}")
+        return None, None
+
+def analyze_and_report(df, target_date_str=None, chat_id=None, df_tab2=None):
     """Analyzes the data, adds recommendations, and generates a report."""
     target_chat_id = chat_id if chat_id else TELEGRAM_CHAT_ID
     
@@ -274,6 +335,18 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
             except Exception as chart_err:
                 print(f"Failed to send chart: {chart_err}")
 
+        # --- TAB 2 REPORTING ---
+        if df_tab2 is not None:
+            tab2_file, tab2_text = generate_tab2_report(df_tab2, latest_date)
+            if tab2_file and os.path.exists(tab2_file):
+                try:
+                    with open(tab2_file, 'rb') as photo:
+                        bot.send_photo(target_chat_id, photo)
+                    os.remove(tab2_file)
+                except: pass
+            if tab2_text:
+                bot.send_message(target_chat_id, tab2_text, parse_mode='Markdown')
+
         bot.send_message(target_chat_id, report, parse_mode='Markdown')
         return df_latest
         
@@ -297,12 +370,14 @@ def handle_report_command(message):
         
         waiting_msg = bot.reply_to(message, "⏳ Connecting to Google Sheets...")
         
-        df = load_data(chat_id=chat_id)
+        df = load_data(chat_id=chat_id, tab=1)
+        df_tab2 = load_data(chat_id=chat_id, tab=2)
+        
         if df is None: return
             
         bot.edit_message_text("📊 Aggregating and Analyzing metrics...", chat_id, waiting_msg.message_id)
         
-        analyze_and_report(df, target_date_str=target_date, chat_id=chat_id)
+        analyze_and_report(df, target_date_str=target_date, chat_id=chat_id, df_tab2=df_tab2)
         
         bot.delete_message(chat_id, waiting_msg.message_id)
         
