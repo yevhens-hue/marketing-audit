@@ -45,21 +45,35 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
     target_chat_id = chat_id if chat_id else TELEGRAM_CHAT_ID
     
     try:
-        # Clean and convert numeric columns
+        # 1. Clean numerical columns (Costs, In, etc.)
         cols_to_clean = ['Costs', 'In', 'Out', 'RFD', 'Regs']
         for col in cols_to_clean:
             if col in df.columns:
+                # Force to string, clean, then convert to numeric
                 df[col] = df[col].astype(str).str.replace(r'[$\s\xa0]', '', regex=True).str.replace(',', '.')
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
+        # 2. Format technical columns (Buyer, Funnel) - ensure they are integers/strings
+        for col in ['Buyer', 'Funnel']:
+            if col in df.columns:
+                # Convert to numeric first to handle float representation (1.0 -> 1)
+                temp_numeric = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+                df[col] = temp_numeric.astype(str)
+
+        # 3. Handle Dates
+        if 'Date' not in df.columns or df['Date'].isnull().all():
+            bot.send_message(target_chat_id, "❌ Error: 'Date' column is missing or empty.")
+            return None
+            
+        df['Date'] = df['Date'].astype(str)
+        df['Date_DT'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+        
         # Calculate Metrics
         df['CPA'] = df['Costs'] / df['RFD']
         df['ROAS'] = df['In'] / df['Costs']
         df.fillna(0, inplace=True)
         df.replace([np.inf, -np.inf], 0, inplace=True)
         
-        # --- FILTER BY DATE ---
-        df['Date_DT'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
         unique_dates = sorted(df['Date_DT'].dropna().unique())
         
         if not unique_dates:
@@ -67,7 +81,7 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
             return df
 
         if target_date_str:
-            target_date_str = target_date_str.strip()
+            target_date_str = str(target_date_str).strip()
             try:
                 latest_date = pd.to_datetime(target_date_str, dayfirst=True)
                 if latest_date not in unique_dates:
@@ -104,7 +118,8 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
         alerts = []
         for index, row in df_latest.iterrows():
             roas, cost = row['ROAS'], row['Costs']
-            buyer, funnel = row.get('Buyer', 'Unknown'), row.get('Funnel', 'Unknown')
+            buyer, funnel = str(row.get('Buyer', '0')), str(row.get('Funnel', '0'))
+            
             rec = "🛡️ MONITOR"
             if roas > 4.0 and cost > 1000:
                 rec = "🚀 ROCKET SCALE (ROAS > 4)"
@@ -123,25 +138,25 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
         # --- REPORT TEXT ---
         report = f"📊 **MARKETING AUDIT: {latest_date_str}**\n\n"
         
-        # Top Winners
+        # Winning Funnels
         top_winners = df_latest[df_latest['AI_Recommendation'].str.contains('ROCKET|SCALE')].sort_values(by='ROAS', ascending=False).head(5)
         if not top_winners.empty:
             report += "🚀 **TOP OPPORTUNITIES:**\n"
             for _, row in top_winners.iterrows():
-                buyer, funnel = row.get('Buyer'), row.get('Funnel')
-                prev_row = df_prev[(df_prev['Buyer'] == buyer) & (df_prev['Funnel'] == funnel)]
+                b, f = str(row['Buyer']), str(row['Funnel'])
+                prev_row = df_prev[(df_prev['Buyer'] == b) & (df_prev['Funnel'] == f)]
                 delta = get_delta_str(row['ROAS'], prev_row['ROAS'].iloc[0]) if not prev_row.empty else ""
-                report += f"- B{buyer}/F{funnel}: ROAS {row['ROAS']:.2f}{delta}, CPA ${row['CPA']:.0f}\n"
+                report += f"- B{b}/F{f}: ROAS {row['ROAS']:.2f}{delta}, CPA ${row['CPA']:.1f}\n"
             
-        # Top Losers
+        # Losing Funnels
         top_losers = df_latest[df_latest['AI_Recommendation'].str.contains('STOP')].sort_values(by='Costs', ascending=False).head(5)
         if not top_losers.empty:
             report += "\n❌ **CRITICAL CUTS:**\n"
             for _, row in top_losers.iterrows():
-                buyer, funnel = row.get('Buyer'), row.get('Funnel')
-                prev_row = df_prev[(df_prev['Buyer'] == buyer) & (df_prev['Funnel'] == funnel)]
+                b, f = str(row['Buyer']), str(row['Funnel'])
+                prev_row = df_prev[(df_prev['Buyer'] == b) & (df_prev['Funnel'] == f)]
                 delta = get_delta_str(row['ROAS'], prev_row['ROAS'].iloc[0]) if not prev_row.empty else ""
-                report += f"- B{buyer}/F{funnel}: ROAS {row['ROAS']:.2f}{delta}, Cost ${row['Costs']:.0f}\n"
+                report += f"- B{b}/F{f}: ROAS {row['ROAS']:.2f}{delta}, Cost ${row['Costs']:.0f}\n"
             
         if previous_date:
             t_in_now, t_in_prev = df_latest['In'].sum(), df_prev['In'].sum()
@@ -162,7 +177,7 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
         
     except Exception as e:
         bot.send_message(target_chat_id, f"❌ Analysis Crash: {str(e)}")
-        print(f"Crash in analyze_and_report: {e}")
+        print(f"Crash details: {e}")
         return None
 
 # --- TELEGRAM BOT HANDLERS ---
