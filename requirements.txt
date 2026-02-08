@@ -2,3 +2,4 @@ pandas
 requests
 numpy
 pyTelegramBotAPI
+matplotlib

@@ -4,7 +4,10 @@ import requests
 import os
 import sys
 import telebot
-from datetime import datetime
+import matplotlib
+matplotlib.use('Agg') # Set backend before importing pyplot
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8536522580:AAGN2g8NyA5DC2qn65hPMz6rayEj2ISH0gY')
@@ -38,6 +41,66 @@ def load_data(chat_id=None):
         if chat_id:
             bot.send_message(chat_id, error_msg)
         print(error_msg)
+        return None
+
+def generate_charts(df, latest_date):
+    """Generates ROAS trend and Cost distribution charts."""
+    try:
+        # Prepare directory/filename
+        filename = "audit_report.png"
+        
+        # 1. ROAS Trend (Last 7 Days)
+        trend_dates = sorted(df['Date_DT'].dropna().unique())
+        trend_dates = [d for d in trend_dates if d <= latest_date][-7:]
+        
+        trend_data = []
+        for d in trend_dates:
+            day_df = df[df['Date_DT'] == d]
+            in_sum = day_df['In'].sum()
+            cost_sum = day_df['Costs'].sum()
+            roas = in_sum / cost_sum if cost_sum > 0 else 0
+            trend_data.append({'Date': d, 'ROAS': roas})
+        
+        df_trend = pd.DataFrame(trend_data)
+
+        # 2. Cost Distribution (Latest Date)
+        df_latest = df[df['Date_DT'] == latest_date]
+        buyer_costs = df_latest.groupby('Buyer')['Costs'].sum()
+
+        # Create Figure
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Simple styling
+        fig.patch.set_facecolor('#f9f9f9')
+
+        # Plot 1: Trend
+        ax1.plot(df_trend['Date'], df_trend['ROAS'], marker='o', color='#2ecc71', linewidth=3, markersize=8)
+        ax1.set_title(f'Portfolio ROAS Trend', fontsize=14, fontweight='bold', pad=20)
+        ax1.set_ylabel('ROAS', fontsize=12)
+        ax1.set_xticks(df_trend['Date'])
+        ax1.set_xticklabels([d.strftime('%d.%m') for d in df_trend['Date']], rotation=45)
+        ax1.grid(True, linestyle='--', alpha=0.3)
+        
+        for x, y in zip(df_trend['Date'], df_trend['ROAS']):
+            ax1.annotate(f'{y:.2f}', (x, y), textcoords="offset points", xytext=(0,10), ha='center', fontweight='bold')
+
+        # Plot 2: Pie chart for Costs
+        if not buyer_costs.empty and buyer_costs.sum() > 0:
+            ax2.pie(buyer_costs, labels=[f"B{b}" for b in buyer_costs.index], autopct='%1.1f%%', 
+                    startangle=140, pctdistance=0.85, colors=plt.cm.Pastel1.colors)
+            # Draw a circle at the center to make it a donut chart
+            centre_circle = plt.Circle((0,0), 0.70, fc='white')
+            fig.gca().add_artist(centre_circle)
+            ax2.set_title('Cost Distribution', fontsize=14, fontweight='bold', pad=20)
+        else:
+            ax2.text(0.5, 0.5, 'No Cost Data', ha='center', va='center')
+
+        plt.tight_layout()
+        plt.savefig(filename, facecolor=fig.get_facecolor(), edgecolor='none', dpi=150)
+        plt.close()
+        return filename
+    except Exception as e:
+        print(f"Chart generation failed: {e}")
         return None
 
 def analyze_and_report(df, target_date_str=None, chat_id=None):
@@ -179,6 +242,16 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
         if alerts:
             report += "\n⚠️ **ALERTS:**\n" + "\n".join(alerts)
             
+        # --- GENERATE AND SEND CHARTS ---
+        chart_file = generate_charts(df, latest_date)
+        if chart_file and os.path.exists(chart_file):
+            try:
+                with open(chart_file, 'rb') as photo:
+                    bot.send_photo(target_chat_id, photo)
+                os.remove(chart_file) # Clean up
+            except Exception as chart_err:
+                print(f"Failed to send chart: {chart_err}")
+
         bot.send_message(target_chat_id, report, parse_mode='Markdown')
         return df_latest
         
@@ -190,7 +263,7 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
 # --- TELEGRAM BOT HANDLERS ---
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    help_text = "👋 **Marketing Audit Bot**\n\nCommands:\n/report - Latest audit\n/report DD.MM.YYYY - Audit for date\n/status - System status"
+    help_text = "👋 **Marketing Audit Bot + Charts**\n\nCommands:\n/report - Full audit with charts\n/report DD.MM.YYYY - Audit for specific date\n/status - Check connection"
     bot.reply_to(message, help_text, parse_mode='Markdown')
 
 @bot.message_handler(commands=['report'])
