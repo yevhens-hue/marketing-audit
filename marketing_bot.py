@@ -45,33 +45,40 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
     target_chat_id = chat_id if chat_id else TELEGRAM_CHAT_ID
     
     try:
-        # 1. Clean numerical columns (Costs, In, etc.)
+        # 1. Global Fill NaNs with a safe value first, carefully
+        # We fill numeric columns with 0 and object columns with empty string or specific default
+        for col in df.columns:
+            if df[col].dtype == object or str(df[col].dtype).startswith('string'):
+                df[col] = df[col].fillna('')
+            else:
+                df[col] = df[col].fillna(0)
+
+        # 2. Clean numerical columns (Costs, In, etc.)
         cols_to_clean = ['Costs', 'In', 'Out', 'RFD', 'Regs']
         for col in cols_to_clean:
             if col in df.columns:
-                # Force to string, clean, then convert to numeric
                 df[col] = df[col].astype(str).str.replace(r'[$\s\xa0]', '', regex=True).str.replace(',', '.')
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-        # 2. Format technical columns (Buyer, Funnel) - ensure they are integers/strings
+        # 3. Format technical columns (Buyer, Funnel) - ensure they are clean strings
         for col in ['Buyer', 'Funnel']:
             if col in df.columns:
-                # Convert to numeric first to handle float representation (1.0 -> 1)
+                # Handle cases where it might be 0, "0", or NaN
                 temp_numeric = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
                 df[col] = temp_numeric.astype(str)
 
-        # 3. Handle Dates
-        if 'Date' not in df.columns or df['Date'].isnull().all():
-            bot.send_message(target_chat_id, "❌ Error: 'Date' column is missing or empty.")
+        # 4. Handle Dates
+        if 'Date' not in df.columns:
+            bot.send_message(target_chat_id, "❌ Error: 'Date' column is missing.")
             return None
             
-        df['Date'] = df['Date'].astype(str)
-        df['Date_DT'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+        df['Date_DT'] = pd.to_datetime(df['Date'].astype(str), dayfirst=True, errors='coerce')
         
-        # Calculate Metrics
-        df['CPA'] = df['Costs'] / df['RFD']
-        df['ROAS'] = df['In'] / df['Costs']
-        df.fillna(0, inplace=True)
+        # Calculate Metrics using numpy to avoid division by zero errors before filling
+        df['CPA'] = np.where(df['RFD'] != 0, df['Costs'] / df['RFD'], 0)
+        df['ROAS'] = np.where(df['Costs'] != 0, df['In'] / df['Costs'], 0)
+        
+        # Final replacement of any remaining infs (just in case)
         df.replace([np.inf, -np.inf], 0, inplace=True)
         
         unique_dates = sorted(df['Date_DT'].dropna().unique())
