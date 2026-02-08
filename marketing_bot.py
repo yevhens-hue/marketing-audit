@@ -47,10 +47,9 @@ def load_data(chat_id=None, tab=1):
         return None
 
 def generate_charts(df, latest_date):
-    """Generates ROAS trend and Cost distribution charts."""
+    """Generates a comprehensive Dashboard (Charts + Table)."""
     try:
-        # Prepare directory/filename
-        filename = "audit_report.png"
+        filename = "dashboard_report.png"
         
         # 1. ROAS Trend (Last 7 Days)
         trend_dates = sorted(df['Date_DT'].dropna().unique())
@@ -63,43 +62,83 @@ def generate_charts(df, latest_date):
             cost_sum = day_df['Costs'].sum()
             roas = in_sum / cost_sum if cost_sum > 0 else 0
             trend_data.append({'Date': d, 'ROAS': roas})
-        
         df_trend = pd.DataFrame(trend_data)
 
-        # 2. Cost Distribution (Latest Date)
+        # 2. Buyer Performance (Latest Date)
         df_latest = df[df['Date_DT'] == latest_date]
-        buyer_costs = df_latest.groupby('Buyer')['Costs'].sum()
+        buyer_perf = df_latest.groupby('Buyer').agg({'Costs': 'sum', 'In': 'sum'}).reset_index()
 
-        # Create Figure
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-        
-        # Simple styling
-        fig.patch.set_facecolor('#f9f9f9')
+        # 3. Summary Table Data
+        table_data = []
+        # Top rows by Revenue
+        top_rows = df_latest.sort_values(by='In', ascending=False).head(8)
+        for _, row in top_rows.iterrows():
+            table_data.append([
+                f"B{row.get('Buyer')}/F{row.get('Funnel')}",
+                f"${row['Costs']:,.0f}",
+                int(row['RFD']),
+                f"{row['ROAS']:.2f}",
+                f"{row['CR_Reg2Dep']:.1f}%"
+            ])
 
-        # Plot 1: Trend
-        ax1.plot(df_trend['Date'], df_trend['ROAS'], marker='o', color='#2ecc71', linewidth=3, markersize=8)
-        ax1.set_title(f'Portfolio ROAS Trend', fontsize=14, fontweight='bold', pad=20)
+        # Create Dashboard Layout
+        # 2 rows: top row has 2 charts, bottom row has the table
+        fig = plt.figure(figsize=(16, 12))
+        grid = plt.GridSpec(2, 2, hspace=0.3, wspace=0.2)
+        fig.patch.set_facecolor('#f4f7f6')
+
+        # Ax1: ROAS Trend
+        ax1 = fig.add_subplot(grid[0, 0])
+        ax1.plot(df_trend['Date'], df_trend['ROAS'], marker='o', color='#3498db', linewidth=3, markersize=10, label='Portfolio ROAS')
+        ax1.set_title('7-Day ROAS Trend', fontsize=16, fontweight='bold', pad=20)
         ax1.set_ylabel('ROAS', fontsize=12)
         ax1.set_xticks(df_trend['Date'])
         ax1.set_xticklabels([d.strftime('%d.%m') for d in df_trend['Date']], rotation=45)
         ax1.grid(True, linestyle='--', alpha=0.3)
-        
+        ax1.axhline(1.0, color='red', linestyle='--', alpha=0.5, label='Break-even')
+        ax1.legend()
         for x, y in zip(df_trend['Date'], df_trend['ROAS']):
-            ax1.annotate(f'{y:.2f}', (x, y), textcoords="offset points", xytext=(0,10), ha='center', fontweight='bold')
+            ax1.annotate(f'{y:.2f}', (x, y), textcoords="offset points", xytext=(0,10), ha='center', fontweight='bold', color='#2c3e50')
 
-        # Plot 2: Pie chart for Costs
-        if not buyer_costs.empty and buyer_costs.sum() > 0:
-            ax2.pie(buyer_costs, labels=[f"B{b}" for b in buyer_costs.index], autopct='%1.1f%%', 
-                    startangle=140, pctdistance=0.85, colors=plt.cm.Pastel1.colors)
-            # Draw a circle at the center to make it a donut chart
-            centre_circle = plt.Circle((0,0), 0.70, fc='white')
-            fig.gca().add_artist(centre_circle)
-            ax2.set_title('Cost Distribution', fontsize=14, fontweight='bold', pad=20)
-        else:
-            ax2.text(0.5, 0.5, 'No Cost Data', ha='center', va='center')
+        # Ax2: Buyer Costs vs Revenue
+        ax2 = fig.add_subplot(grid[0, 1])
+        x_indices = np.arange(len(buyer_perf))
+        width = 0.35
+        ax2.bar(x_indices - width/2, buyer_perf['Costs'], width, label='Costs', color='#e74c3c', alpha=0.8)
+        ax2.bar(x_indices + width/2, buyer_perf['In'], width, label='Revenue', color='#27ae60', alpha=0.8)
+        ax2.set_title('Costs vs Revenue by Buyer', fontsize=16, fontweight='bold', pad=20)
+        ax2.set_xticks(x_indices)
+        ax2.set_xticklabels([f"B{b}" for b in buyer_perf['Buyer']])
+        ax2.set_ylabel('Amount ($)')
+        ax2.legend()
+        ax2.grid(True, axis='y', linestyle='--', alpha=0.2)
 
-        plt.tight_layout()
-        plt.savefig(filename, facecolor=fig.get_facecolor(), edgecolor='none', dpi=150)
+        # Ax3: Summary Table
+        ax3 = fig.add_subplot(grid[1, :])
+        ax3.axis('off')
+        col_labels = ['Buyer/Funnel', 'Costs', 'RFD', 'ROAS', 'Reg2Dep CR']
+        if table_data:
+            the_table = ax3.table(cellText=table_data, colLabels=col_labels, loc='center', cellLoc='center')
+            the_table.auto_set_font_size(False)
+            the_table.set_fontsize(13)
+            the_table.scale(1, 2.8)
+            
+            # Color headers
+            for (row_idx, col_idx), cell in the_table.get_celld().items():
+                if row_idx == 0:
+                    cell.set_text_props(weight='bold', color='white')
+                    cell.set_facecolor('#2c3e50')
+                else:
+                    if col_idx == 3: # ROAS column
+                        try:
+                            val = float(table_data[row_idx-1][3])
+                            if val >= 2.0: cell.get_text().set_color('#27ae60')
+                            elif val < 1.0: cell.get_text().set_color('#e74c3c')
+                        except: pass
+        
+        ax3.set_title(f'Performance Summary Table: {latest_date.strftime("%d.%m.%Y")}', fontsize=18, fontweight='bold', y=0.95)
+
+        plt.savefig(filename, facecolor=fig.get_facecolor(), dpi=150, bbox_inches='tight')
         plt.close()
         return filename
     except Exception as e:
