@@ -140,8 +140,10 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
         # Calculate Metrics using numpy to avoid division by zero errors before filling
         df['CPA'] = np.where(df['RFD'] != 0, df['Costs'] / df['RFD'], 0)
         df['ROAS'] = np.where(df['Costs'] != 0, df['In'] / df['Costs'], 0)
+        df['Profit'] = df['In'] - df['Costs']
+        df['CR_Reg2Dep'] = np.where(df['Regs'] != 0, (df['RFD'] / df['Regs']) * 100, 0)
         
-        # Final replacement of any remaining infs (just in case)
+        # Final replacement of any remaining infs
         df.replace([np.inf, -np.inf], 0, inplace=True)
         
         unique_dates = sorted(df['Date_DT'].dropna().unique())
@@ -187,27 +189,47 @@ def analyze_and_report(df, target_date_str=None, chat_id=None):
         recommendations = []
         alerts = []
         for index, row in df_latest.iterrows():
-            roas, cost = row['ROAS'], row['Costs']
+            roas, cost, cr = row['ROAS'], row['Costs'], row['CR_Reg2Dep']
             buyer, funnel = str(row.get('Buyer', '0')), str(row.get('Funnel', '0'))
             
             rec = "🛡️ MONITOR"
             if roas > 4.0 and cost > 1000:
                 rec = "🚀 ROCKET SCALE (ROAS > 4)"
-                alerts.append(f"🦄 **UNICORN ALERT:** Buyer {buyer} (Funnel {funnel}) has ROAS {roas:.2f}! Scale!")
-            elif roas > 2.0 and cost > 2000:
-                rec = "🔥 SCALE AGGRESSIVE"
-            elif roas < 0.6 and cost > 2000:
-                rec = "❌ STOP IMMEDIATE (Burning Cash)"
-                alerts.append(f"🚨 **BUDGET BLEED:** Buyer {buyer} (Funnel {funnel}) ROAS {roas:.2f}. Stop!")
-            elif roas > 0.9:
-                rec = "📈 MAINTAIN / SCALE"
+                alerts.append(f"🦄 **UNICORN ALERT:** Buyer {buyer}/F{funnel} (ROAS {roas:.2f})")
+            elif roas < 0.6 and cost > 1000:
+                rec = "❌ STOP IMMEDIATE"
+                alerts.append(f"🚨 **BUDGET BLEED:** Buyer {buyer}/F{funnel} (ROAS {roas:.2f})")
+            
+            # CR-based Alert
+            if cr < 5.0 and row['Regs'] > 20:
+                alerts.append(f"🗑️ **TRASH TRAFFIC:** Buyer {buyer}/F{funnel} CR {cr:.1f}% (Low Quality)")
+
             recommendations.append(rec)
         
         df_latest['AI_Recommendation'] = recommendations
         
+        # --- CALC OPTIMIZATION FORECAST ---
+        df_optimized = df_latest[~df_latest['AI_Recommendation'].str.contains('STOP')].copy()
+        opt_roas = df_optimized['In'].sum() / df_optimized['Costs'].sum() if df_optimized['Costs'].sum() > 0 else 0
+        current_roas = df_latest['In'].sum() / df_latest['Costs'].sum() if df_latest['Costs'].sum() > 0 else 0
+        
         # --- REPORT TEXT ---
         report = f"📊 **MARKETING AUDIT: {latest_date_str}**\n\n"
         
+        # Portfolio Overview
+        total_in = df_latest['In'].sum()
+        total_cost = df_latest['Costs'].sum()
+        total_profit = df_latest['Profit'].sum()
+        avg_cr = (df_latest['RFD'].sum() / df_latest['Regs'].sum() * 100) if df_latest['Regs'].sum() > 0 else 0
+        
+        report += f"💰 **Main Results:**\n"
+        report += f"- Profit: ${total_profit:,.0f} (ROI {(((total_in-total_cost)/total_cost*100) if total_cost > 0 else 0):.1f}%)\n"
+        report += f"- Avg CR (Reg2Dep): {avg_cr:.1f}%\n\n"
+
+        # Optimization Insight
+        if opt_roas > current_roas:
+            report += f"💡 **AI OPTIMIZER:**\nStopping 'STOP' campaigns would boost ROAS from **{current_roas:.2f}** up to **{opt_roas:.2f}**! 🚀\n\n"
+
         # Winning Funnels
         top_winners = df_latest[df_latest['AI_Recommendation'].str.contains('ROCKET|SCALE')].sort_values(by='ROAS', ascending=False).head(5)
         if not top_winners.empty:
