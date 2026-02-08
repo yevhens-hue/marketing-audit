@@ -33,6 +33,12 @@ def load_data():
         # Added skiprows=1 to skip the description row
         df = pd.read_csv(CSV_URL, skiprows=1)
         
+        # Forward fill Date and Buyer columns to handle merged cells in Google Sheets
+        if 'Date' in df.columns:
+            df['Date'] = df['Date'].ffill()
+        if 'Buyer' in df.columns:
+            df['Buyer'] = df['Buyer'].ffill()
+            
         # Rename "RFD*" to "RFD" to match our logic
         if 'RFD*' in df.columns:
             df.rename(columns={'RFD*': 'RFD'}, inplace=True)
