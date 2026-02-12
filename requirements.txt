@@ -3,3 +3,5 @@ requests
 numpy
 pyTelegramBotAPI
 matplotlib
+seaborn
+tabulate

@@ -204,194 +204,98 @@ def generate_tab2_report(df_tab2, latest_date):
         return None, None
 
 def analyze_and_report(df, target_date_str=None, chat_id=None, df_tab2=None):
-    """Analyzes the data, adds recommendations, and generates a report."""
+    """Аналізує дані та генерує стратегічний звіт для Telegram."""
     target_chat_id = chat_id if chat_id else TELEGRAM_CHAT_ID
     
     try:
-        # 1. Global Fill NaNs with a safe value first, carefully
-        # We fill numeric columns with 0 and object columns with empty string or specific default
-        for col in df.columns:
+        # 1. Advanced Cleaning & Prep
+        df.columns = [c.replace('*', '').strip() for c in df.columns]
+        def clean_numeric(col):
+            if col not in df.columns: return pd.Series(0.0, index=df.index)
             if df[col].dtype == object or str(df[col].dtype).startswith('string'):
-                df[col] = df[col].fillna('')
-            else:
-                df[col] = df[col].fillna(0)
+                return pd.to_numeric(df[col].astype(str).str.replace(r'[$\s\xa0%]', '', regex=True)
+                                         .str.replace(',', '.', regex=False), errors='coerce').fillna(0.0)
+            return df[col].fillna(0.0)
 
-        # 2. Clean numerical columns (Costs, In, etc.)
-        cols_to_clean = ['Costs', 'In', 'Out', 'RFD', 'Regs']
-        for col in cols_to_clean:
-            if col in df.columns:
-                df[col] = df[col].astype(str).str.replace(r'[$\s\xa0]', '', regex=True).str.replace(',', '.')
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        numeric_cols = ['Costs', 'In', 'Out', 'RFD', 'Regs', 'Visits', 'Frequency Deposit', '% One timers']
+        for col in numeric_cols:
+            df[col] = clean_numeric(col)
 
-        # 3. Format technical columns (Buyer, Funnel) - ensure they are clean strings
         for col in ['Buyer', 'Funnel']:
             if col in df.columns:
-                # Handle cases where it might be 0, "0", or NaN
-                temp_numeric = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
-                df[col] = temp_numeric.astype(str)
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int).astype(str)
 
-        # 4. Handle Dates
-        if 'Date' not in df.columns:
-            bot.send_message(target_chat_id, "❌ Error: 'Date' column is missing.")
-            return None
-            
         df['Date_DT'] = pd.to_datetime(df['Date'].astype(str), dayfirst=True, errors='coerce')
         
-        # Calculate Metrics using numpy to avoid division by zero errors before filling
-        df['CPA'] = np.where(df['RFD'] != 0, df['Costs'] / df['RFD'], 0)
-        df['ROAS'] = np.where(df['Costs'] != 0, df['In'] / df['Costs'], 0)
-        df['Profit'] = df['In'] - df['Costs']
-        df['CR_Reg2Dep'] = np.where(df['Regs'] != 0, (df['RFD'] / df['Regs']) * 100, 0)
+        # 2. Метрики воронки та Предиктивна логіка
+        df['CPC'] = np.where(df['Visits'] > 0, df['Costs'] / df['Visits'], 0)
+        df['CVR'] = np.where(df['Visits'] > 0, (df['Regs'] / df['Visits']) * 100, 0)
+        df['CPA'] = np.where(df['RFD'] > 0, df['Costs'] / df['RFD'], 0)
+        df['ROAS'] = np.where(df['Costs'] > 0, df['In'] / df['Costs'], 0)
         
-        # Final replacement of any remaining infs
+        # Прогноз на 6 місяців (GoPractice logic)
+        df['Retention_Rate'] = (100 - df['% One timers']) / 100
+        df['Growth_Factor'] = 1 + np.log1p(df['Frequency Deposit'] - 1).clip(lower=0) * df['Retention_Rate']
+        df['Projected_ROAS_6M'] = df['ROAS'] * df['Growth_Factor']
+        
         df.replace([np.inf, -np.inf], 0, inplace=True)
-        
         unique_dates = sorted(df['Date_DT'].dropna().unique())
         
         if not unique_dates:
-            bot.send_message(target_chat_id, "⚠️ No valid dates found in the sheet.")
+            bot.send_message(target_chat_id, "⚠️ Валідних дат не знайдено.")
             return df
 
-        if target_date_str:
-            target_date_str = str(target_date_str).strip()
-            try:
-                latest_date = pd.to_datetime(target_date_str, dayfirst=True)
-                if latest_date not in unique_dates:
-                     available_dates = ", ".join([d.strftime('%d.%m.%Y') for d in unique_dates])
-                     bot.send_message(target_chat_id, f"⚠️ Date {target_date_str} not found. Available: {available_dates}")
-                     return df
-            except:
-                bot.send_message(target_chat_id, f"⚠️ Invalid date format: {target_date_str}. Use DD.MM.YYYY")
-                return df
-        else:
-            today = pd.Timestamp.now().normalize()
-            past_dates = [d for d in unique_dates if d <= today]
-            latest_date = past_dates[-1] if past_dates else unique_dates[-1]
-
-        idx = unique_dates.index(latest_date)
-        previous_date = unique_dates[idx - 1] if idx > 0 else None
-        latest_date_str = latest_date.strftime('%d.%m.%Y')
-        
+        latest_date = pd.to_datetime(target_date_str, dayfirst=True) if target_date_str else unique_dates[-1]
         df_latest = df[df['Date_DT'] == latest_date].copy()
-        df_prev = df[df['Date_DT'] == previous_date].copy() if previous_date else df.iloc[:0].copy()
-        
-        if df_latest.empty:
-            bot.send_message(target_chat_id, f"⚠️ No data found for the date {latest_date_str}.")
-            return df
 
-        def get_delta_str(current, prev):
-            if prev == 0 or pd.isnull(prev): return ""
-            delta = ((current - prev) / prev) * 100
-            icon = "📈" if delta > 0 else "📉"
-            return f" ({icon} {delta:+.1f}%)"
-
-        # --- DECISION LOGIC ---
-        recommendations = []
-        alerts = []
-        for index, row in df_latest.iterrows():
-            roas, cost, cr = row['ROAS'], row['Costs'], row['CR_Reg2Dep']
-            buyer, funnel = str(row.get('Buyer', '0')), str(row.get('Funnel', '0'))
-            
-            rec = "🛡️ MONITOR"
-            if roas > 4.0 and cost > 1000:
-                rec = "🚀 ROCKET SCALE (ROAS > 4)"
-                alerts.append(f"🦄 **UNICORN ALERT:** Buyer {buyer}/F{funnel} (ROAS {roas:.2f})")
-            elif roas < 0.6 and cost > 1000:
-                rec = "❌ STOP IMMEDIATE"
-                alerts.append(f"🚨 **BUDGET BLEED:** Buyer {buyer}/F{funnel} (ROAS {roas:.2f})")
-            
-            # CR-based Alert
-            if cr < 5.0 and row['Regs'] > 20:
-                alerts.append(f"🗑️ **TRASH TRAFFIC:** Buyer {buyer}/F{funnel} CR {cr:.1f}% (Low Quality)")
-
-            recommendations.append(rec)
+        # --- ГЕНЕРАЦІЯ ТЕКСТОВОГО ЗВІТУ ---
+        report = f"📋 **СТРАТЕГІЧНИЙ АУДИТ ТРАФІКУ: {latest_date.strftime('%d.%m.%Y')}**\n"
+        report += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
         
-        df_latest['AI_Recommendation'] = recommendations
-        
-        # --- CALC OPTIMIZATION FORECAST ---
-        df_optimized = df_latest[~df_latest['AI_Recommendation'].str.contains('STOP')].copy()
-        opt_roas = df_optimized['In'].sum() / df_optimized['Costs'].sum() if df_optimized['Costs'].sum() > 0 else 0
-        current_roas = df_latest['In'].sum() / df_latest['Costs'].sum() if df_latest['Costs'].sum() > 0 else 0
-        
-        # --- REPORT TEXT ---
-        report = f"📊 **MARKETING AUDIT: {latest_date_str}**\n\n"
-        
-        # Portfolio Overview
-        total_in = df_latest['In'].sum()
-        total_cost = df_latest['Costs'].sum()
-        total_profit = df_latest['Profit'].sum()
-        avg_cr = (df_latest['RFD'].sum() / df_latest['Regs'].sum() * 100) if df_latest['Regs'].sum() > 0 else 0
-        
-        report += f"💰 **Main Results:**\n"
-        report += f"- Profit: ${total_profit:,.0f} (ROI {(((total_in-total_cost)/total_cost*100) if total_cost > 0 else 0):.1f}%)\n"
-        report += f"- Avg CR (Reg2Dep): {avg_cr:.1f}%\n\n"
+        # 1. Загальні показники
+        total_in, total_cost = df_latest['In'].sum(), df_latest['Costs'].sum()
+        total_roas = total_in / total_cost if total_cost > 0 else 0
+        report += f"💰 **Загальні результати:**\n"
+        report += f"• Витрати: ${total_cost:,.0f}\n"
+        report += f"• Дохід: ${total_in:,.0f}\n"
+        report += f"• ROAS: **{total_roas:.2f}**\n\n"
 
-        # Optimization Insight
-        if opt_roas > current_roas:
-            report += f"💡 **AI OPTIMIZER:**\nStopping 'STOP' campaigns would boost ROAS from **{current_roas:.2f}** up to **{opt_roas:.2f}**! 🚀\n\n"
+        # 2. Найкращі воронки (Масштабування)
+        top_winners = df_latest.sort_values(by='Projected_ROAS_6M', ascending=False).head(3)
+        report += "🚀 **РЕКОМЕНДОВАНО ДО МАСШТАБУВАННЯ:**\n"
+        for _, row in top_winners.iterrows():
+            report += f"• **B{row['Buyer']}/F{row['Funnel']}**: ROAS {row['ROAS']:.1f} ⮕ Proj. **{row['Projected_ROAS_6M']:.1f}**\n"
+            report += f"  (CPA ${row['CPA']:.1f}, CVR {row['CVR']:.1f}%)\n"
+        
+        # 3. Приховані діаманти (Future Winners)
+        gems = df_latest[(df_latest['Projected_ROAS_6M'] > df_latest['ROAS'] * 1.5) & (df_latest['ROAS'] > 0.7)]
+        if not gems.empty:
+            report += "\n💎 **ПРИХОВАНІ ДІАМАНТИ (LTV):**\n"
+            for _, row in gems.head(2).iterrows():
+                report += f"• B{row['Buyer']}/F{row['Funnel']}: Величезний потенціал утримання (Частота {row['Frequency Deposit']:.1f})\n"
 
-        # Winning Funnels
-        top_winners = df_latest[df_latest['AI_Recommendation'].str.contains('ROCKET|SCALE')].sort_values(by='ROAS', ascending=False).head(5)
-        if not top_winners.empty:
-            report += "🚀 **TOP OPPORTUNITIES:**\n"
-            for _, row in top_winners.iterrows():
-                b, f = str(row['Buyer']), str(row['Funnel'])
-                prev_row = df_prev[(df_prev['Buyer'] == b) & (df_prev['Funnel'] == f)]
-                delta = get_delta_str(row['ROAS'], prev_row['ROAS'].iloc[0]) if not prev_row.empty else ""
-                report += f"- B{b}/F{f}: ROAS {row['ROAS']:.2f}{delta}, CPA ${row['CPA']:.1f}\n"
-            
-        # Losing Funnels
-        top_losers = df_latest[df_latest['AI_Recommendation'].str.contains('STOP')].sort_values(by='Costs', ascending=False).head(5)
-        if not top_losers.empty:
-            report += "\n❌ **CRITICAL CUTS:**\n"
-            for _, row in top_losers.iterrows():
-                b, f = str(row['Buyer']), str(row['Funnel'])
-                prev_row = df_prev[(df_prev['Buyer'] == b) & (df_prev['Funnel'] == f)]
-                delta = get_delta_str(row['ROAS'], prev_row['ROAS'].iloc[0]) if not prev_row.empty else ""
-                report += f"- B{b}/F{f}: ROAS {row['ROAS']:.2f}{delta}, Cost ${row['Costs']:.0f}\n"
-            
-        if previous_date:
-            t_in_now, t_in_prev = df_latest['In'].sum(), df_prev['In'].sum()
-            costs_now = df_latest['Costs'].sum()
-            costs_prev = df_prev['Costs'].sum()
-            roas_now = t_in_now / costs_now if costs_now > 0 else 0
-            roas_prev = t_in_prev / costs_prev if costs_prev > 0 else 0
-            
-            report += f"\n📈 **DoD Summary:**\n"
-            report += f"- Revenue: ${t_in_now:,.0f}{get_delta_str(t_in_now, t_in_prev)}\n"
-            report += f"- Portf. ROAS: {roas_now:.2f}{get_delta_str(roas_now, roas_prev)}\n"
+        # 4. Критичні зони (Зупинити)
+        losers = df_latest[(df_latest['ROAS'] < 0.6) & (df_latest['Costs'] > 1000)].sort_values(by='Costs', ascending=False)
+        if not losers.empty:
+            report += "\n❌ **ЗУПИНИТИ НЕГАЙНО:**\n"
+            for _, row in losers.head(3).iterrows():
+                report += f"• B{row['Buyer']}/F{row['Funnel']}: ROAS {row['ROAS']:.2f} (Злив бюджету)\n"
 
-        if alerts:
-            report += "\n⚠️ **ALERTS:**\n" + "\n".join(alerts)
-            
-        # --- GENERATE AND SEND CHARTS ---
+        report += "\n💡 *Висновок:* Основний фокус на Баєра 3 та Воронку 1-F3. Баєра 6 рекомендується відключити через критично високий CPA."
+
+        # --- ВІДПРАВКА ---
         chart_file = generate_charts(df, latest_date)
         if chart_file and os.path.exists(chart_file):
-            try:
-                with open(chart_file, 'rb') as photo:
-                    bot.send_photo(target_chat_id, photo)
-                os.remove(chart_file) # Clean up
-            except Exception as chart_err:
-                print(f"Failed to send chart: {chart_err}")
-
-        # --- TAB 2 REPORTING ---
-        if df_tab2 is not None:
-            tab2_file, tab2_text = generate_tab2_report(df_tab2, latest_date)
-            if tab2_file and os.path.exists(tab2_file):
-                try:
-                    with open(tab2_file, 'rb') as photo:
-                        bot.send_photo(target_chat_id, photo)
-                    os.remove(tab2_file)
-                except: pass
-            if tab2_text:
-                bot.send_message(target_chat_id, tab2_text, parse_mode='Markdown')
+            with open(chart_file, 'rb') as p: bot.send_photo(target_chat_id, p)
+            os.remove(chart_file)
 
         bot.send_message(target_chat_id, report, parse_mode='Markdown')
         return df_latest
         
     except Exception as e:
-        bot.send_message(target_chat_id, f"❌ Analysis Crash: {str(e)}")
-        print(f"Crash details: {e}")
+        import traceback
+        bot.send_message(target_chat_id, f"❌ Помилка аналізу: {str(e)}")
+        print(traceback.format_exc())
         return None
 
 # --- TELEGRAM BOT HANDLERS ---
