@@ -208,37 +208,45 @@ def analyze_and_report(df, target_date_str=None, chat_id=None, df_tab2=None):
     target_chat_id = chat_id if chat_id else TELEGRAM_CHAT_ID
     
     try:
-        # 1. Advanced Cleaning & Prep
-        df.columns = [c.replace('*', '').strip() for c in df.columns]
+        # 1. Advanced Cleaning & Column Normalization
+        # Прибираємо зайві пробіли та символи з назв колонок
+        df.columns = [str(c).replace('*', '').strip() for c in df.columns]
+        
+        # Обробка дублікатів імен колонок (беремо першу, якщо є кілька)
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+
         def clean_numeric(col):
-            if col not in df.columns: return pd.Series(0.0, index=df.index)
-            if df[col].dtype == object or str(df[col].dtype).startswith('string'):
-                return pd.to_numeric(df[col].astype(str).str.replace(r'[$\s\xa0%]', '', regex=True)
-                                         .str.replace(',', '.', regex=False), errors='coerce').fillna(0.0)
-            return df[col].fillna(0.0)
+            if col not in df.columns: 
+                return pd.Series(0.0, index=df.index)
+            # Примусово в текст -> видалення сміття -> в число -> в float64
+            clean_s = df[col].astype(str).str.replace(r'[$\s\xa0%]', '', regex=True).str.replace(',', '.', regex=False)
+            return pd.to_numeric(clean_s, errors='coerce').fillna(0.0).astype(float)
 
         numeric_cols = ['Costs', 'In', 'Out', 'RFD', 'Regs', 'Visits', 'Frequency Deposit', '% One timers']
         for col in numeric_cols:
             df[col] = clean_numeric(col)
 
+        # Технічні колонки (Баєри та Воронки) приводимо до тексту для зручності
         for col in ['Buyer', 'Funnel']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int).astype(str)
 
+        # 2. Обробка дат
         df['Date_DT'] = pd.to_datetime(df['Date'].astype(str), dayfirst=True, errors='coerce')
         
-        # 2. Метрики воронки та Предиктивна логіка
-        df['CPC'] = np.where(df['Visits'] > 0, df['Costs'] / df['Visits'], 0)
-        df['CVR'] = np.where(df['Visits'] > 0, (df['Regs'] / df['Visits']) * 100, 0)
-        df['CPA'] = np.where(df['RFD'] > 0, df['Costs'] / df['RFD'], 0)
-        df['ROAS'] = np.where(df['Costs'] > 0, df['In'] / df['Costs'], 0)
+        # 3. Метрики воронки (всі розрахунки на float64)
+        df['CPC'] = np.where(df['Visits'] > 0, df['Costs'] / df['Visits'], 0.0)
+        df['CVR'] = np.where(df['Visits'] > 0, (df['Regs'] / df['Visits']) * 100.0, 0.0)
+        df['CPA'] = np.where(df['RFD'] > 0, df['Costs'] / df['RFD'], 0.0)
+        df['ROAS'] = np.where(df['Costs'] > 0, df['In'] / df['Costs'], 0.0)
         
-        # Прогноз на 6 місяців (GoPractice logic)
-        df['Retention_Rate'] = (100 - df['% One timers']) / 100
-        df['Growth_Factor'] = 1 + np.log1p(df['Frequency Deposit'] - 1).clip(lower=0) * df['Retention_Rate']
+        # Прогноз LTV (GoPractice logic)
+        df['Retention_Rate'] = (100.0 - df['% One timers']) / 100.0
+        # np.log1p вимагає числового вводу
+        df['Growth_Factor'] = 1.0 + np.log1p(df['Frequency Deposit'].clip(lower=1.0) - 1.0) * df['Retention_Rate']
         df['Projected_ROAS_6M'] = df['ROAS'] * df['Growth_Factor']
         
-        df.replace([np.inf, -np.inf], 0, inplace=True)
+        df.replace([np.inf, -np.inf], 0.0, inplace=True)
         unique_dates = sorted(df['Date_DT'].dropna().unique())
         
         if not unique_dates:
@@ -252,9 +260,11 @@ def analyze_and_report(df, target_date_str=None, chat_id=None, df_tab2=None):
         report = f"📋 **СТРАТЕГІЧНИЙ АУДИТ ТРАФІКУ: {latest_date.strftime('%d.%m.%Y')}**\n"
         report += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
         
-        # 1. Загальні показники
-        total_in, total_cost = df_latest['In'].sum(), df_latest['Costs'].sum()
-        total_roas = total_in / total_cost if total_cost > 0 else 0
+        # 1. Загальні показники (явне приведення до float для суми)
+        total_in = float(df_latest['In'].sum())
+        total_cost = float(df_latest['Costs'].sum())
+        total_roas = total_in / total_cost if total_cost > 0 else 0.0
+        
         report += f"💰 **Загальні результати:**\n"
         report += f"• Витрати: ${total_cost:,.0f}\n"
         report += f"• Дохід: ${total_in:,.0f}\n"
