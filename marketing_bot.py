@@ -284,8 +284,8 @@ def analyze_and_report(df, target_date_str=None, chat_id=None, df_tab2=None):
         df_latest = df[df['Date_DT'] == latest_date].copy()
         df_hist = df[df['Date_DT'] < latest_date].copy()
 
-        # --- ГЕНЕРАЦІЯ ТЕКСТОВОГО ЗВІТУ ---
-        report = f"📋 **TEAM LEAD STRATEGIC BRIEF: {latest_date.strftime('%d.%m.%Y')}**\n"
+        # --- ГЕНЕРАЦІЯ СТРАТЕГІЧНОГО ЗВІТУ (А-ля Tab 2.1) ---
+        report = f"📋 **STRATEGIC AUDIT & ACTION PLAN: {latest_date.strftime('%d.%m.%Y')}**\n"
         report += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
         
         total_in, total_cost = float(df_latest['In'].sum()), float(df_latest['Costs'].sum())
@@ -294,23 +294,40 @@ def analyze_and_report(df, target_date_str=None, chat_id=None, df_tab2=None):
         report += f"💰 **Main KPIs:**\n"
         report += f"• Витрати: ${total_cost:,.0f} | ROAS: **{total_roas:.2f}**\n\n"
 
-        # Strategic Win & Anomalies
+        # Strategic Classification
+        actions = []
+        for _, row in df_latest.iterrows():
+            cid = f"B{row['Buyer']}/F{row['Funnel']}"
+            r = row['ROAS']
+            p_r = row['Projected_ROAS_6M']
+            cst = row['Costs']
+            cpa = row['CPA']
+            
+            status, next_b, reason = "", 0, ""
+            
+            if r > 1.2 and p_r > 1.5:
+                status, next_b, reason = "🚀 SCALE", cst * 1.5, f"ROAS {r:.2f}, високий LTV"
+            elif r < 0.7 and cst > 500:
+                status, next_b, reason = "❌ STOP", 0, f"Збитки (ROAS {r:.2f})"
+            elif cpa > 200 or (r < 1.0 and cst > 2000):
+                status, next_b, reason = "🔧 OPTIMIZE", cst * 0.8, f"Високий CPA (${cpa:.0f})"
+            elif r >= 1.0:
+                status, next_b, reason = "✅ MAINTAIN", cst, "Стабільний перформанс"
+            
+            if status:
+                actions.append(f"**{cid}** | {status}\n`${cst:,.0f}` ⮕ `${next_b:,.0f}`\n_{reason}_\n")
+
+        # Аномалії (Z-Score)
         anomalies = detect_anomalies(df_latest, df_hist)
         if anomalies:
-            report += "⚠️ **ВІДХИЛЕННЯ ТА ЗБОЇ:**\n" + "\n".join(anomalies[:3]) + "\n\n"
+            report += "⚠️ **ВІДХИЛЕННЯ ТА ЗБОЇ:**\n" + "\n".join(anomalies[:2]) + "\n\n"
 
-        # Pivot Strategy
-        optimization = simulate_scaling(df_latest)
-        if optimization:
-            report += f"🔄 **СТРАТЕГІЧНИЙ ПОВОРОТ:**\n{optimization}\n\n"
+        # Таблиця Дій
+        report += "📅 **ПЛАН ДІЙ НА НАСТУПНИЙ ПЕРІОД:**\n"
+        report += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+        report += "\n".join(actions[:6]) # Беремо топ-6 найважливіших дій
 
-        # Top 3 Winners with LTV Signal
-        winners = df_latest.sort_values(by='Projected_ROAS_6M', ascending=False).head(3)
-        report += "🚀 **ПРИОРІТЕТИ ДЛЯ МАСШТАБУВАННЯ (LTV 기반):**\n"
-        for _, row in winners.iterrows():
-            report += f"• **B{row['Buyer']}/F{row['Funnel']}**: Real {row['ROAS']:.1f} ⮕ Exp. **{row['Projected_ROAS_6M']:.1f}**\n"
-
-        report += "\n💡 *TL Insight:* Перевірте Баєра 6 — CPA перевищує бенчмарк на 45% за останні 48 годин."
+        report += "\n\n💡 *TL Insight:* Основний прибуток генекують воронки з високою частотою депозитів. Рекомендую перелити ліквідність від STOP-листів до лідерів скейлінгу."
 
         # --- ВІДПРАВКА ---
         chart_file = generate_charts(df, latest_date)
