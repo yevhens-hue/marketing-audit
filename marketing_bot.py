@@ -284,50 +284,62 @@ def analyze_and_report(df, target_date_str=None, chat_id=None, df_tab2=None):
         df_latest = df[df['Date_DT'] == latest_date].copy()
         df_hist = df[df['Date_DT'] < latest_date].copy()
 
-        # --- ГЕНЕРАЦІЯ СТРАТЕГІЧНОГО ЗВІТУ (А-ля Tab 2.1) ---
-        report = f"📋 **STRATEGIC AUDIT & ACTION PLAN: {latest_date.strftime('%d.%m.%Y')}**\n"
+        # --- ГЕНЕРАЦІЯ СИНХРОНІЗОВАНОГО ЗВІТУ (Рішення задачі NEW) ---
+        report = f"📋 **РІШЕННЯ ЗАДАЧІ: МАРКЕТИНГОВИЙ АУДИТ {latest_date.strftime('%d.%m.%Y')}**\n"
         report += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
         
-        total_in, total_cost = float(df_latest['In'].sum()), float(df_latest['Costs'].sum())
-        total_roas = total_in / total_cost if total_cost > 0 else 0.0
-        
-        report += f"💰 **Main KPIs:**\n"
-        report += f"• Витрати: ${total_cost:,.0f} | ROAS: **{total_roas:.2f}**\n\n"
+        # 1. Ключові маркетингові показники
+        report += "1. **Ключові маркетингові показники (Key KPIs)**\n"
+        report += "Для аналізу кожної воронки ми розрахували наступні метрики:\n"
+        report += "• **CPC** (Costs / Visits) — вартість залучення відвідувача.\n"
+        report += "• **CVR** (Regs / Visits * 100) — ефективність воронки.\n"
+        report += "• **CPA** (Costs / RFD) — вартість залучення гравця з депом.\n"
+        report += "• **ROAS Real** (In / Costs) — поточна окупність витрат.\n"
+        report += "• **Projected ROAS** (ROAS * (1 + log(Freq) * Retention)) — прогноз окупності на 6 місяців.\n\n"
 
-        # Strategic Classification
-        actions = []
-        for _, row in df_latest.iterrows():
-            cid = f"B{row['Buyer']}/F{row['Funnel']}"
-            r = row['ROAS']
-            p_r = row['Projected_ROAS_6M']
-            cst = row['Costs']
-            cpa = row['CPA']
+        # 2. Аналіз ефективності баєрів та воронок
+        report += "2. **Аналіз ефективності баєрів та воронок**\n"
+        winners = df_latest.sort_values(by='Projected_ROAS_6M', ascending=False).head(5)
+        for _, row in winners.iterrows():
+            cid = f"B{row['Buyer']} (F{row['Funnel']})"
+            status = "🚀 SCALE"
+            if row['Projected_ROAS_6M'] > 10: status = "🚀 SUPER SCALE"
+            elif row['ROAS'] < 1.0 and row['Projected_ROAS_6M'] > 2.0: status = "💎 HIDDEN GEM"
             
-            status, next_b, reason = "", 0, ""
-            
-            if r > 1.2 and p_r > 1.5:
-                status, next_b, reason = "🚀 SCALE", cst * 1.5, f"ROAS {r:.2f}, високий LTV"
-            elif r < 0.7 and cst > 500:
-                status, next_b, reason = "❌ STOP", 0, f"Збитки (ROAS {r:.2f})"
-            elif cpa > 200 or (r < 1.0 and cst > 2000):
-                status, next_b, reason = "🔧 OPTIMIZE", cst * 0.8, f"Високий CPA (${cpa:.0f})"
-            elif r >= 1.0:
-                status, next_b, reason = "✅ MAINTAIN", cst, "Стабільний перформанс"
-            
-            if status:
-                actions.append(f"**{cid}** | {status}\n`${cst:,.0f}` ⮕ `${next_b:,.0f}`\n_{reason}_\n")
+            report += f"• **{cid}**: CPA ${row['CPA']:.1f} | Real {row['ROAS']:.2f} | **Proj. {row['Projected_ROAS_6M']:.2f}** | Status: {status}\n"
 
-        # Аномалії (Z-Score)
+        # Стратегічний інсайт
+        gem = df_latest[df_latest['Projected_ROAS_6M'] > df_latest['ROAS'] * 2].sort_values(by='Projected_ROAS_6M', ascending=False)
+        if not gem.empty:
+            g = gem.iloc[0]
+            report += f"\n💡 **Стратегічний інсайт:** Воронка B{g['Buyer']} (F{g['Funnel']}) при низькому поточному ROI має аномально високу частоту депозитів ({g['Frequency Deposit']:.1f}). Це свідчить про залучення «китів» (VIP). Рекомендуємо масштабування, оскільки LTV тут значно вище витрат.\n\n"
+
+        # 3. Операційний аудит та аномалії
+        report += "3. **Операційний аудит та аномалії (Safety First)**\n"
+        report += "За допомогою Z-Score ((Value – Mean) / StdDev) ми виявили відхилення:\n"
         anomalies = detect_anomalies(df_latest, df_hist)
         if anomalies:
-            report += "⚠️ **ВІДХИЛЕННЯ ТА ЗБОЇ:**\n" + "\n".join(anomalies[:2]) + "\n\n"
+            report += "\n".join(anomalies[:2]) + "\n"
+        else:
+            report += "• Критичних аномалій не виявлено.\n"
+        report += "\n"
 
-        # Таблиця Дій
-        report += "📅 **ПЛАН ДІЙ НА НАСТУПНИЙ ПЕРІОД:**\n"
-        report += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-        report += "\n".join(actions[:6]) # Беремо топ-6 найважливіших дій
-
-        report += "\n\n💡 *TL Insight:* Основний прибуток генекують воронки з високою частотою депозитів. Рекомендую перелити ліквідність від STOP-листів до лідерів скейлінгу."
+        # 4. План перерозподілу бюджету
+        report += "4. **План перерозподілу бюджету (Budget Reallocation)**\n"
+        report += "Симулятор оптимізації Cash Flow:\n"
+        
+        # Симуляція для топ-3 дій
+        top_scale = winners.head(2)
+        losers = df_latest[df_latest['ROAS'] < 0.7].sort_values(by='Costs', ascending=False).head(2)
+        
+        for _, r in top_scale.iterrows():
+            report += f"• **B{r['Buyer']} (F{r['Funnel']})**: 🚀 Scale | ${r['Costs']:,.0f} ⮕ **${r['Costs']*2:,.0f}** | (ROI {r['Projected_ROAS_6M']:.2f})\n"
+        for _, r in losers.iterrows():
+            report += f"• **B{r['Buyer']} (F{r['Funnel']})**: ❌ Stop | ${r['Costs']:,.0f} ⮕ **$0** | (Збитки)\n"
+        
+        # 5. Підсумкова рекомендація
+        report += "\n5. **Підсумкова рекомендація**\n"
+        report += "Фокусуємось на масштабуванні лідерів по Projected ROAS. Вивільнені кошти від STOP-листів направити на тестування HIDDEN GEMS для пошуку нових VIP-когорт. Слабкі воронки зупинити до заміни креативів."
 
         # --- ВІДПРАВКА ---
         chart_file = generate_charts(df, latest_date)
