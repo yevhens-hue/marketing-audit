@@ -1,44 +1,65 @@
-# 🚀 Automated Data Audit & Reporting Engine
+# 📊 Marketing Audit & Data Intelligence Engine
 
-Automated performance monitoring and validation tool for high-velocity datasets. Developed to replace manual spreadsheet reporting with real-time, data-driven backend insights.
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white)](https://postgresql.org)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
 
-## 📊 Overview
-In data-heavy environments, manual reporting is prone to errors and delays. This system automates the entire analysis pipeline:
+An automated high-throughput data extraction, marketing audit, and attribution pipeline designed to ingest, clean, and analyze multi-channel advertising performance (Google Ads, Meta Ads, TikTok) and SEO metrics at scale.
 
-- **Ingests Data:** Pulls raw datasets directly from external APIs and Google Sheets endpoints.
-- **Analyzes Performance:** Calculates throughput, conversion rates, and custom metrics in real-time.
-- **Detects Anomalies:** Identifies statistical outliers and failing data nodes.
-- **Actionable Alerts:** Sends a daily executive summary and instant critical alerts to external Webhooks / Messaging APIs.
+---
 
-## 🛠 Tech Stack
-- **Python 3.9+** (Core Logic)
-- **Pandas** (Data Processing, Vectorized Calculations, and Normalization)
-- **Google Sheets API** (Data Ingestion)
-- **Messaging APIs** (Real-time Notification System)
-- **Git** (Version Control)
+## 🏛️ Pipeline Architecture
 
-## 💡 Key Features
+```mermaid
+flowchart LR
+    subgraph Ingestion ["Multi-Channel Data Ingestion"]
+        API_G["Google / Meta Ads API"]
+        SEO["SEO & Domain Metrics (Adsy)"]
+        CSV["Raw CSV / JSON Exports"]
+    end
 
-### 1. Automated Decision Engine
-The script applies complex business logic to evaluate raw data:
-- 🚀 **SCALING:** High performance metrics. Recommendation: Increase processing allocation.
-- 🛡️ **OPTIMIZATION:** Normal operation. Recommendation: Standard monitoring.
-- ❌ **KILL SWITCH:** High error rate detected. Recommendation: Halt ingestion immediately.
+    subgraph Processing ["Core Processing Engine (Python)"]
+        Parser["ETL & Normalization Layer"]
+        Anomaly["Anomaly & Fatigue Detector"]
+        Scorer["Lead & Attribution Scorer"]
+    end
 
-### 2. Instant Routing Alerts
-No need to open dashboards. The engine pushes insights directly to your integrated channels:
-* *"🚨 PIPELINE BLEED: Node 6 is failing (Error 0.54). Halt ingestion!"*
-* *"🦄 METRIC ALERT: Stream 3 achieved 100% processing rate!"*
+    subgraph Storage ["Storage & Distribution"]
+        DB[(PostgreSQL / Supabase)]
+        Cache[(Redis Cache)]
+        TG["Telegram Alert Bot"]
+        Dash["Live Analytics Dashboard"]
+    end
 
-## 🚀 How to Run
-
-1. **Clone the repository:**
-```bash
-git clone https://github.com/yevhens-hue/marketing-audit.git
-cd marketing-audit
+    Ingestion --> Parser
+    Parser --> Anomaly --> Scorer
+    Scorer --> DB
+    Scorer --> Cache
+    Anomaly -->|Instant Waste Alert| TG
+    DB --> Dash
 ```
 
-2. **Run the Audit Bot:**
-```bash
-python3 audit_bot.py
-```
+---
+
+## ⚡ Core Capabilities
+
+1. **Automated Anomaly & Fatigue Detection:** Flags ROAS drop-offs, ad creative fatigue, and wasted budget segments in real time.
+2. **Deterministic Attribution Modeling:** Cleanly tracks user touchpoints across multi-channel campaigns with zero data loss.
+3. **High-Speed Data Ingestion:** Asynchronous batch processing handling thousands of daily data points with automated deduplication and schema validation (Pydantic V2).
+4. **Instant Alerts & Reporting:** Webhook-driven dispatcher sending formatted executive summaries directly to Telegram and Slack channels.
+
+---
+
+## 🛠️ Tech Stack
+
+- **Core:** Python 3.11, FastAPI, Pydantic V2, Pandas, NumPy
+- **Data & Cache:** PostgreSQL, Supabase, Redis
+- **Automation & Scheduling:** Celery, Redis Queues, Cron
+- **Integrations:** Telegram Bot API, Google Ads API, Meta Marketing API
+
+---
+
+## 👨‍💻 Author & Engineering
+- **Author:** [Yevhen Shaforostov](https://github.com/yevhens-hue)
+- **Role:** AI Product Manager & Full-Stack AI Engineer at [Adsy.com](https://adsy.com)
